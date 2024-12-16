@@ -1,71 +1,114 @@
 "use client";
 
-import Link from "next/link";
-import type { NextPage } from "next";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAccount } from "wagmi";
-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
 import { Address } from "~~/components/scaffold-eth";
+import { useScaffoldContract } from "~~/hooks/scaffold-eth";
 
-const Home: NextPage = () => {
-  const { address: connectedAddress } = useAccount();
-
-  return (
-    <>
-      <div className="flex items-center flex-col flex-grow pt-10">
-        <div className="px-5">
-          <h1 className="text-center">
-            <span className="block text-2xl mb-2">Welcome to</span>
-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
-          </h1>
-          <div className="flex justify-center items-center space-x-2 flex-col sm:flex-row">
-            <p className="my-2 font-medium">Connected Address:</p>
-            <Address address={connectedAddress} />
-          </div>
-          <p className="text-center text-lg">
-            Get started by editing{" "}
-            <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
-              packages/nextjs/app/page.tsx
-            </code>
-          </p>
-          <p className="text-center text-lg">
-            Edit your smart contract{" "}
-            <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
-              YourContract.sol
-            </code>{" "}
-            in{" "}
-            <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
-              packages/hardhat/contracts
-            </code>
-          </p>
-        </div>
-
-        <div className="flex-grow bg-base-300 w-full mt-16 px-8 py-12">
-          <div className="flex justify-center items-center gap-12 flex-col sm:flex-row">
-            <div className="flex flex-col bg-base-100 px-10 py-10 text-center items-center max-w-xs rounded-3xl">
-              <BugAntIcon className="h-8 w-8 fill-secondary" />
-              <p>
-                Tinker with your smart contract using the{" "}
-                <Link href="/debug" passHref className="link">
-                  Debug Contracts
-                </Link>{" "}
-                tab.
-              </p>
-            </div>
-            <div className="flex flex-col bg-base-100 px-10 py-10 text-center items-center max-w-xs rounded-3xl">
-              <MagnifyingGlassIcon className="h-8 w-8 fill-secondary" />
-              <p>
-                Explore your local transactions with the{" "}
-                <Link href="/blockexplorer" passHref className="link">
-                  Block Explorer
-                </Link>{" "}
-                tab.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
+type EventData = {
+  eventId: bigint;
+  name: string;
+  numCandidates: number;
+  isOpen: boolean;
+  resolved: boolean;
+  winner?: number;
+  totalBetsOnCandidate: bigint[];
+  creator: string;
 };
 
-export default Home;
+export default function EventsPage() {
+  const router = useRouter();
+  const { address: connectedAddress } = useAccount();
+  const [events, setEvents] = useState<EventData[]>([]);
+  const { data: contract, isLoading } = useScaffoldContract({ contractName: "Betting" });
+
+  const loadEventInfo = async (id: bigint) => {
+    const eventData = await contract?.read.events([id]);
+    if (!eventData) return;
+
+    const [creator, name, numCandidates, isOpen, resolved, winner] = eventData;
+
+    const totalBets = (await contract?.read.getEventTotalBetsOnCandidate([id])) as bigint[];
+    return {
+      eventId: id,
+      name,
+      numCandidates,
+      isOpen,
+      resolved,
+      winner: resolved ? winner : undefined,
+      totalBetsOnCandidate: totalBets,
+      creator,
+    };
+  };
+
+  const fetchEvents = async () => {
+    const eventCount = await contract?.read.eventCount();
+    if (!eventCount) return;
+
+    const count = Number(eventCount);
+    const promises = [];
+    for (let i = count - 1; i >= 0; i--) {
+      promises.push(loadEventInfo(BigInt(i)));
+    }
+    const result = await Promise.all(promises);
+    setEvents(result.filter(Boolean) as EventData[]);
+  };
+
+  useEffect(() => {
+    if (isLoading) return;
+    fetchEvents();
+
+    const interval = setInterval(() => {
+      fetchEvents();
+    }, 1000);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading]);
+
+  if (isLoading) return <div>Loading...</div>;
+
+  return (
+    <div className="container mx-auto p-8">
+      <h1 className="text-3xl font-bold mb-4">Betting DApp</h1>
+      <div className="flex gap-4 mb-4">
+        <p>Connected address:</p>
+        <Address address={connectedAddress} />
+      </div>
+      <div className="mb-4">
+        <button className="btn btn-primary" onClick={() => router.push("/events/create")}>
+          Create New Event
+        </button>
+      </div>
+      <div className="border p-4">
+        <h2 className="text-xl font-semibold mb-2">Events</h2>
+        {events.length === 0 && <p>No events yet.</p>}
+        {events.map(ev => (
+          <div key={ev.eventId.toString()} className="p-4 border-b">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-bold">
+                  Event #{ev.eventId.toString()}: {ev.name}
+                </p>
+                <p>
+                  Candidates: {ev.numCandidates} | Open: {ev.isOpen ? "Yes" : "No"} | Resolved:{" "}
+                  {ev.resolved ? `Yes (winner: ${ev.winner})` : "No"}
+                </p>
+              </div>
+              <button className="btn btn-primary" onClick={() => router.replace(`/events/${ev.eventId.toString()}`)}>
+                View
+              </button>
+            </div>
+            <div className="mt-2">
+              <p className="text-sm text-gray-500">
+                Total bets by candidate:{" "}
+                {ev.totalBetsOnCandidate.map((t, i) => `C${i}: ${t.toString()} wei`).join(", ")}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
